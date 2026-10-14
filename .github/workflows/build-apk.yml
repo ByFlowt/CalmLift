@@ -1,0 +1,128 @@
+name: Build CalmLift APK
+
+on:
+  push:
+    branches: [ "**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle Build Cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build & Test APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --parallel --build-cache
+
+      - name: Prepare APK binary
+        run: |
+          mkdir -p apks
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -n "$RELEASE_APK" ] && [ -f "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" apks/CalmLift.apk
+            echo "Copied $RELEASE_APK to apks/CalmLift.apk"
+          fi
+
+          if [ ! -f apks/CalmLift.apk ]; then
+            echo "::error::Required CalmLift.apk release binary not found in build outputs!"
+            find app/build/outputs/ -type f
+            exit 1
+          fi
+          ls -lh apks/
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: CalmLift-release-apk
+          path: apks/CalmLift.apk
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Compute Release Metadata
+        if: success() && github.event_name != 'pull_request'
+        id: release_info
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            NAME="CalmLift Release ${TAG}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            TAG="v1.0.${{ github.run_number }}"
+            NAME="CalmLift Release v1.0.${{ github.run_number }}"
+          else
+            # Branch release
+            SAFE_BRANCH=$(echo "${{ github.ref_name }}" | tr '/' '-')
+            TAG="v1.0.${{ github.run_number }}-${SAFE_BRANCH}"
+            NAME="CalmLift Build v1.0.${{ github.run_number }} (${{ github.ref_name }})"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+          # Dynamic changelog from commits since previous tag or last 15 commits
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "$PREV_TAG..HEAD" --no-merges --pretty=format:"- %s" | head -n 15)
+          else
+            COMMITS=$(git log -n 10 --no-merges --pretty=format:"- %s")
+          fi
+          if [ -z "$COMMITS" ]; then
+            COMMITS="- Bugfixes, UI polish, and performance improvements"
+          fi
+
+          {
+            echo "## CalmLift Android Client"
+            echo ""
+            echo "Automated build for branch \`${{ github.ref_name }}\` at commit \`${{ github.sha }}\` (Run #${{ github.run_number }})."
+            echo ""
+            echo "### Highlights:"
+            echo "$COMMITS"
+            echo ""
+            echo "### Downloads:"
+            echo "- **[CalmLift.apk (Production Release)](https://github.com/ByFlowt/CalmLift/releases/download/${TAG}/CalmLift.apk)**"
+          } > release_body.md
+
+      - name: Publish to GitHub Releases
+        if: success() && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.release_info.outputs.name }}
+          body_path: release_body.md
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            apks/CalmLift.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

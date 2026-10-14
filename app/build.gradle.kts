@@ -4,6 +4,19 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
 }
 
+val ciRunNumber = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
+val buildVersionCode: Int = if (ciRunNumber != null) {
+    1000 + ciRunNumber
+} else {
+    1001
+}
+
+val buildVersionName: String = if (ciRunNumber != null) {
+    "1.0.$ciRunNumber"
+} else {
+    "1.0.1"
+}
+
 android {
     namespace = "com.example.calmlift"
     compileSdk = 36
@@ -11,14 +24,30 @@ android {
         applicationId = "com.example.calmlift"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = buildVersionCode
+        versionName = buildVersionName
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            val keystoreFile = rootProject.file("debug.keystore")
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
